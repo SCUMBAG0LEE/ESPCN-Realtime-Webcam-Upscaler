@@ -95,7 +95,7 @@ def espcn_upscale_bgr(lr_bgr: np.ndarray, model: nn.Module, device: torch.device
     Returns:
         Upscaled 2x image in BGR format with shape (H*2, W*2, 3).
     """
-    img = lr_rgb.astype(np.float32) / 255.0
+    img = lr_bgr.astype(np.float32) / 255.0
     img = np.transpose(img, (2, 0, 1))
     img = np.expand_dims(img, 0)
     tensor = torch.from_numpy(img).to(device)
