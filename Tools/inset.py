@@ -1,14 +1,36 @@
+"""
+Image Inset Tool with Interactive Selection
+
+PyQt6 GUI tool for selecting and extracting image insets.
+Provides visual selection interface with zoom preview and coordinate mapping.
+
+Dependencies:
+    - PyQt6
+    - Pillow (PIL)
+"""
+
 import sys
 import os
-from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QLabel, 
-                             QVBoxLayout, QPushButton, QFileDialog, QMessageBox, 
-                             QGridLayout, QScrollArea)
+from typing import Optional, List
+from PyQt6.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QLabel, QVBoxLayout, QPushButton, 
+    QFileDialog, QMessageBox, QGridLayout, QScrollArea
+)
 from PyQt6.QtGui import QPixmap, QImage, QPainter, QPen, QColor, QPainterPath
 from PyQt6.QtCore import Qt, QRect, pyqtSignal, QPoint
 from PIL import Image
 
+# ============================================================================
+# CUSTOM WIDGETS
+# ============================================================================
+
 class ImageLabel(QLabel):
-    """ Custom Label that handles mouse selection """
+    """Custom label widget for interactive image selection.
+    
+    Allows users to select rectangular regions via mouse dragging.
+    Emits selection_changed signal when selection is modified.
+    """
+    
     selection_changed = pyqtSignal(QRect) 
 
     def __init__(self):
@@ -49,7 +71,10 @@ class ImageLabel(QLabel):
         self.update()
 
 class ArrowOverlay(QWidget):
-    """ Transparent layer for drawing arrows on top of images """
+    """Transparent overlay layer for drawing arrows between image regions.
+    
+    Displays arrows pointing from source region to corresponding zoomed region.
+    """
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)

@@ -1,5 +1,25 @@
+"""
+QR Code Robustness Testing Tool
+
+Tests ESPCN upscaling robustness with QR codes.
+Processes QR codes through downscaling/upscaling and verifies decodability.
+
+Dependencies:
+    - opencv-python
+    - numpy
+    - torch
+    - pillow
+    - scikit-image
+    - matplotlib
+    - pyzxing
+
+Note:
+    QR code decoding requires pyzxing with Java ZXing library installed.
+"""
+
 import os
 from pathlib import Path
+from typing import Tuple, Optional
 
 import cv2
 import numpy as np
@@ -12,13 +32,20 @@ from skimage.metrics import peak_signal_noise_ratio as psnr
 from skimage.metrics import structural_similarity as ssim
 from skimage.metrics import mean_squared_error as mse
 
-from pyzxing import BarCodeReader  # pip install pyzxing
+try:
+    from pyzxing import BarCodeReader
+except ImportError:
+    print("Warning: pyzxing not installed. QR decoding will not work.")
+    BarCodeReader = None
 
-
-# ===================== ESPCN MODEL (2x) =====================
+# ============================================================================
+# ESPCN MODEL DEFINITION
+# ============================================================================
 
 class ESPCN(nn.Module):
-    def __init__(self, upscalefactor=2):
+    """Efficient Sub-Pixel Convolutional Neural Network for 2x upscaling."""
+    
+    def __init__(self, upscalefactor: int = 2):
         super().__init__()
         self.conv1 = nn.Conv2d(3, 64, kernel_size=5, padding=2)
         self.conv2 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
@@ -26,7 +53,8 @@ class ESPCN(nn.Module):
         self.pixelshuffle = nn.PixelShuffle(upscalefactor)
         self.relu = nn.ReLU()
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Forward pass through ESPCN network."""
         x = self.relu(self.conv1(x))
         x = self.relu(self.conv2(x))
         x = self.pixelshuffle(self.conv3(x))
@@ -55,7 +83,18 @@ def load_espcn_pytorch(model_path: str, device: torch.device, upscale: int = 2) 
 
 
 def espcn_upscale_bgr(lr_bgr: np.ndarray, model: nn.Module, device: torch.device, fp16: bool = False) -> np.ndarray:
-    lr_rgb = cv2.cvtColor(lr_bgr, cv2.COLOR_BGR2RGB)
+    """
+    Upscale a BGR image using ESPCN model (2x scale).
+    
+    Args:
+        lr_bgr: Low-resolution input image in BGR format.
+        model: ESPCN PyTorch model.
+        device: Device to run model on (CPU/CUDA).
+        fp16: Whether to use FP16 precision (only on CUDA).
+    
+    Returns:
+        Upscaled 2x image in BGR format with shape (H*2, W*2, 3).
+    """
     img = lr_rgb.astype(np.float32) / 255.0
     img = np.transpose(img, (2, 0, 1))
     img = np.expand_dims(img, 0)
@@ -92,10 +131,16 @@ def espcn_upscale_bgr(lr_bgr: np.ndarray, model: nn.Module, device: torch.device
 
 reader = BarCodeReader()
 
-def qr_decode_info(img_path: str):
+def qr_decode_info(img_path: str) -> Tuple[bool, str]:
     """
-    Returns (decodable_bool, clean_text) using ZXing via pyzxing.
-    Converts bytes to utf-8 str if needed.
+    Decode QR code from image using ZXing via pyzxing.
+    
+    Args:
+        img_path: Path to image file.
+    
+    Returns:
+        Tuple of (decoded_successfully, decoded_text).
+        decoded_text is empty string if decoding failed or no text found.
     """
     try:
         results = reader.decode(img_path)
@@ -121,16 +166,33 @@ def qr_decode_info(img_path: str):
 
 
 def is_qr_decodable(img_path: str) -> bool:
+    """
+    Quick check if QR code in image is decodable.
+    
+    Args:
+        img_path: Path to image file.
+    
+    Returns:
+        True if QR code successfully decoded, False otherwise.
+    """
     ok, _ = qr_decode_info(img_path)
     return ok
 
 
 # ===================== COMPARISON (MSE/SSIM/QR) =====================
 
-def compare_and_save(img_gt_file, img_bicubic_file, img_espcn_file, save_path):
+def compare_and_save(img_gt_file: str, img_bicubic_file: str, img_espcn_file: str, save_path: str) -> None:
     """
-    Loads three images, calculates MSE, PSNR, SSIM, checks QR decodability,
-    shows GT / Bicubic / ESPCN with compact multi-line titles, and saves the figure.
+    Load and compare three images, calculate quality metrics and QR decodability.
+    
+    Creates a 3-panel matplotlib figure showing Ground Truth, Bicubic, and ESPCN
+    with MSE, PSNR, SSIM metrics and QR decode status for each.
+    
+    Args:
+        img_gt_file: Path to ground truth image.
+        img_bicubic_file: Path to bicubic upscaled image.
+        img_espcn_file: Path to ESPCN upscaled image.
+        save_path: Where to save the comparison figure.
     """
 
     try:
@@ -253,8 +315,21 @@ def find_qr_sweet_spot_for_image(
     min_size: int = 8,
     step: int = 2,
     fp16: bool = False,
-):
-    orig = cv2.imread(str(img_path))
+) -> None:
+    """
+    Find optimal low-resolution size for QR robustness testing.
+    
+    Searches for the smallest LR size where ESPCN can decode the QR code
+    but bicubic cannot. Exports GT, bicubic, and ESPCN images at sweet spot.
+    
+    Args:
+        img_path: Path to input image with QR code.
+        model: ESPCN PyTorch model for upscaling.
+        device: Device to run model on.
+        min_size: Minimum LR size to test.
+        step: Size increment step.
+        fp16: Use FP16 precision for inference.
+    """
     if orig is None:
         print(f"[{img_path}] Could not read image, skipping.")
         return
@@ -375,8 +450,13 @@ def find_qr_sweet_spot_for_image(
 
 # ===================== DRIVER =====================
 
-def main():
-    model_path = r"C:\256GB\ESPCN\checkpoints\quality_espcn_x2.pth"
+def main() -> None:
+    """
+    Main entry point for QR robustness testing.
+    
+    Loads ESPCN model and processes all QR code images in current directory,
+    finding sweet spots and generating comparison visualizations.
+    """
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")

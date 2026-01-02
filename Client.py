@@ -1,18 +1,38 @@
+"""
+ESPCN Realtime Webcam Upscaler - Client Application
+
+A PyQt6 desktop application for real-time image upscaling using ESPCN (Efficient Sub-Pixel 
+Convolutional Neural Network) with support for both PyTorch and ONNX Runtime inference engines.
+
+Features:
+  - Real-time webcam upscaling with adjustable frame skip
+  - Batch file processing with preview
+  - Multiple inference engines (PyTorch, ONNX Runtime)
+  - Various execution providers (CPU, CUDA, DirectML, TensorRT)
+  - FP16/FP32 precision modes
+  - Virtual camera output
+  - Persistent settings management
+
+Author: WGProjects
+License: See LICENSE file
+"""
+
 import os
-import cv2
 import sys
 import time
-import torch
-#import openvino 
-#import tensorrt
 import threading
-import numpy as np
-import pyvirtualcam
-import torch.nn as nn  
-from pathlib import Path
-import onnxruntime as ort
 from datetime import datetime
+from pathlib import Path
+from typing import Optional, Tuple, Dict, Any
+
+import cv2
+import numpy as np
+import torch
+import torch.nn as nn
+import onnxruntime as ort
+import pyvirtualcam
 from pyvirtualcam import PixelFormat
+
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QLabel, QPushButton, QVBoxLayout,
     QHBoxLayout, QTabWidget, QComboBox, QCheckBox, QFileDialog,
@@ -22,7 +42,9 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtGui import QImage, QPixmap
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QSettings
 
-# --- Constants ---
+# ============================================================================
+# CONSTANTS
+# ============================================================================
 MIKU_TEAL = "#33CCCC"
 MIKU_PINK = "#FF6699"
 DARK_BG = "#2D2D2D"
@@ -39,10 +61,18 @@ MAX_FILE_RESOLUTIONS = {
 APP_NAME = "ESPCNUpscaler"
 ORG_NAME = "WGProjects"
 
-# --- ONNX Helper Functions ---
+# ============================================================================
+# ONNX RUNTIME HELPER FUNCTIONS
+# ============================================================================
 
-def get_available_providers():
-    """Gets available ONNX Runtime execution providers, prioritizing GPU."""
+def get_available_providers() -> list:
+    """
+    Get available ONNX Runtime execution providers, prioritized by performance.
+    
+    Returns:
+        list: Available execution providers in descending order of preference.
+              Always includes 'CPUExecutionProvider' as fallback.
+    """
     providers = ['CPUExecutionProvider']
     available = ort.get_available_providers()
     if 'TensorrtExecutionProvider' in available:
@@ -55,8 +85,17 @@ def get_available_providers():
         providers.insert(pos, 'DmlExecutionProvider')
     return available
 
-def initialize_onnx_session(model_path, provider):
-    """Initializes ONNX Runtime session with optimized threading."""
+def initialize_onnx_session(model_path: str, provider: str) -> Optional[ort.InferenceSession]:
+    """
+    Initialize ONNX Runtime inference session with optimized threading.
+    
+    Args:
+        model_path: Path to the ONNX model file.
+        provider: Execution provider (e.g., 'CPUExecutionProvider', 'CUDAExecutionProvider').
+    
+    Returns:
+        InferenceSession: Initialized ONNX Runtime session, or None if initialization fails.
+    """
     print(f"Initializing ONNX session: {model_path} with provider: {provider}")
     try:
         session_options = ort.SessionOptions()
@@ -73,17 +112,42 @@ def initialize_onnx_session(model_path, provider):
         print(f"Error initializing ONNX session: {e}")
         return None
 
-# --- Image Processing ---
-def preprocess_image(frame, is_fp16=False):
-    """Prepares a frame (NumPy array BGR HWC) for inference."""
+# ============================================================================
+# IMAGE PROCESSING
+# ============================================================================
+def preprocess_image(frame: np.ndarray, is_fp16: bool = False) -> np.ndarray:
+    """
+    Preprocess an image frame for inference.
+    
+    Converts BGR HWC format to NCHW format and normalizes to [0, 1] range.
+    
+    Args:
+        frame: Input frame as NumPy array in BGR HWC format.
+        is_fp16: Whether to use FP16 precision. Defaults to False.
+    
+    Returns:
+        np.ndarray: Preprocessed tensor in NCHW format with batch dimension.
+    """
     dtype = np.float16 if is_fp16 else np.float32
     img = frame.astype(dtype) / 255.0
     img = img.transpose(2, 0, 1)  # HWC to CHW
     img = np.expand_dims(img, axis=0)  # Add batch dimension -> NCHW
     return img
 
-def postprocess_output(output_tensor, is_output_rgb=True):
-    """Converts output tensor back to displayable image (NumPy array BGR HWC)."""
+def postprocess_output(output_tensor: Any, is_output_rgb: bool = True) -> np.ndarray:
+    """
+    Convert model output tensor to displayable image.
+    
+    Converts from NCHW format back to BGR/RGB HWC format, applies color space conversion,
+    and clips values to [0, 255] range.
+    
+    Args:
+        output_tensor: Output tensor from model (torch.Tensor or np.ndarray).
+        is_output_rgb: Whether to convert to RGB (default BGR). Defaults to True.
+    
+    Returns:
+        np.ndarray: Displayable image in BGR HWC format (uint8).
+    """
     if output_tensor is None or output_tensor.size == 0:
         return np.zeros((100, 100, 3), dtype=np.uint8)
 
@@ -94,7 +158,7 @@ def postprocess_output(output_tensor, is_output_rgb=True):
 
         output_image = output_tensor.squeeze()
         if output_image.ndim == 2:
-             output_image = np.expand_dims(output_image, axis=0)
+            output_image = np.expand_dims(output_image, axis=0)
 
         if output_image.shape[0] in [1, 3]:
             output_image = output_image.transpose(1, 2, 0)
@@ -108,33 +172,73 @@ def postprocess_output(output_tensor, is_output_rgb=True):
         if is_output_rgb and output_image.shape[2] == 3:
             output_image = cv2.cvtColor(output_image, cv2.COLOR_RGB2BGR)
         elif output_image.shape[2] == 1:
-             output_image = cv2.cvtColor(output_image, cv2.COLOR_GRAY2BGR)
+            output_image = cv2.cvtColor(output_image, cv2.COLOR_GRAY2BGR)
 
         return output_image
     except Exception as e:
         print(f"Error in postprocessing: {e}")
         return np.zeros((100, 100, 3), dtype=np.uint8)
 
-# --- PyTorch Model Definition ---
+# ============================================================================
+# PYTORCH MODEL DEFINITION
+# ============================================================================
 class ESPCN(nn.Module):
-    def __init__(self, upscale_factor):
+    """
+    Efficient Sub-Pixel Convolutional Neural Network (ESPCN).
+    
+    A lightweight CNN for super-resolution that uses pixel shuffling to efficiently
+    upscale images by the specified factor.
+    
+    Args:
+        upscale_factor: The upscaling factor (e.g., 2 for 2x upscaling).
+    """
+    
+    def __init__(self, upscale_factor: int):
         super(ESPCN, self).__init__()
         self.conv1 = nn.Conv2d(3, 64, kernel_size=5, padding=2)
         self.conv2 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
         self.conv3 = nn.Conv2d(64, 3 * (upscale_factor ** 2), kernel_size=3, padding=1)
         self.pixel_shuffle = nn.PixelShuffle(upscale_factor)
-        self.relu = nn.ReLU() 
+        self.relu = nn.ReLU()
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass of the ESPCN network.
+        
+        Args:
+            x: Input tensor in NCHW format.
+        
+        Returns:
+            torch.Tensor: Upscaled output tensor.
+        """
         x = self.relu(self.conv1(x))
         x = self.relu(self.conv2(x))
         x = self.pixel_shuffle(self.conv3(x))
         return x
 
-# --- Unified Inference Engine Wrapper ---
+# ============================================================================
+# UNIFIED INFERENCE ENGINE
+# ============================================================================
 class InferenceEngine:
-    """A unified wrapper for PyTorch and ONNX Runtime inference."""
-    def __init__(self, engine_type, model_path, provider, is_fp16, model_scale_factor):
+    """
+    Unified wrapper for PyTorch and ONNX Runtime inference.
+    
+    Abstracts the differences between inference engines, allowing seamless switching
+    between PyTorch and ONNX Runtime backends.
+    
+    Args:
+        engine_type: Either 'pytorch' or 'onnx'.
+        model_path: Path to the model file (.pth for PyTorch, .onnx for ONNX).
+        provider: Execution provider for ONNX (e.g., 'CPUExecutionProvider').
+        is_fp16: Whether to use FP16 precision.
+        model_scale_factor: The upscaling factor of the model.
+    
+    Raises:
+        RuntimeError: If engine initialization fails.
+    """
+    
+    def __init__(self, engine_type: str, model_path: str, provider: str, 
+                 is_fp16: bool, model_scale_factor: int):
         self.engine_type = engine_type
         self.is_fp16 = is_fp16
         self.model = None
@@ -167,7 +271,7 @@ class InferenceEngine:
                     else:
                         new_state_dict[key] = value
             else:
-                 new_state_dict = original_state_dict
+                new_state_dict = original_state_dict
             
             self.model.load_state_dict(new_state_dict)
             if self.is_fp16:
@@ -184,8 +288,19 @@ class InferenceEngine:
             else:
                 raise RuntimeError("Failed to initialize ONNX session.")
 
-    def run(self, numpy_input):
-        """Runs inference on a NumPy input and returns a NumPy output."""
+    def run(self, numpy_input: np.ndarray) -> np.ndarray:
+        """
+        Run inference on input data.
+        
+        Args:
+            numpy_input: Input data as NumPy array in NCHW format.
+        
+        Returns:
+            np.ndarray: Inference output as NumPy array.
+        
+        Raises:
+            RuntimeError: If inference engine is not properly initialized.
+        """
         if self.engine_type == 'pytorch':
             input_tensor = torch.from_numpy(numpy_input).to(self.device)
             # PyTorch autocast for FP16
@@ -201,9 +316,20 @@ class InferenceEngine:
         else:
             raise RuntimeError("Inference engine is not properly initialized.")
 
-# --- CameraReaderThread ---
+# ============================================================================
+# CAMERA READER THREAD
+# ============================================================================
 class CameraReaderThread(QThread):
-    """Dedicated thread to continuously read frames from the camera."""
+    """
+    Dedicated thread for continuous camera frame reading.
+    
+    Runs in a separate thread to decouple frame capture from processing,
+    reducing latency and improving responsiveness.
+    
+    Signals:
+        error_signal: Emitted when a camera error occurs.
+    """
+    
     error_signal = pyqtSignal(str)
 
     def __init__(self, camera_index, parent=None):
@@ -243,7 +369,13 @@ class CameraReaderThread(QThread):
         cap.release()
         print("CameraReaderThread finished.")
 
-    def get_latest_frame(self):
+    def get_latest_frame(self) -> Optional[np.ndarray]:
+        """
+        Get the most recent frame captured by the camera.
+        
+        Returns:
+            np.ndarray: The latest frame if available, None otherwise.
+        """
         with self.frame_lock:
             if self.latest_frame is not None:
                 return self.latest_frame.copy()
@@ -251,11 +383,26 @@ class CameraReaderThread(QThread):
                 return None
 
     def stop(self):
+        """Stop the camera reader thread."""
         print("Stopping CameraReaderThread...")
         self.running = False
 
-# --- WebcamThread ---
+# ============================================================================
+# WEBCAM PROCESSING THREAD
+# ============================================================================
 class WebcamThread(QThread):
+    """
+    Real-time webcam processing thread.
+    
+    Captures frames from a camera and applies ESPCN upscaling in real-time.
+    Runs in a separate thread to avoid blocking the UI.
+    
+    Signals:
+        update_frame_signal: Emitted with original and processed frames plus stats.
+        finished_signal: Emitted when thread finishes.
+        camera_error_signal: Emitted when a camera error occurs.
+    """
+    
     update_frame_signal = pyqtSignal(np.ndarray, np.ndarray, dict)
     finished_signal = pyqtSignal()
     camera_error_signal = pyqtSignal(str)
@@ -293,12 +440,12 @@ class WebcamThread(QThread):
             print(f"Webcam using DYNAMIC model input size (from mode): {self.target_input_size}")
 
         if self.target_input_size and self.model_scale_factor:
-             self.output_size = (self.target_input_size[0] * self.model_scale_factor,
-                                 self.target_input_size[1] * self.model_scale_factor)
-             print(f"Webcam calculated output size: {self.output_size}")
+            self.output_size = (self.target_input_size[0] * self.model_scale_factor,
+                                self.target_input_size[1] * self.model_scale_factor)
+            print(f"Webcam calculated output size: {self.output_size}")
         else:
-             print("Warning: Could not determine output size reliably.")
-             self.output_size = (1280, 720)
+            print("Warning: Could not determine output size reliably.")
+            self.output_size = (1280, 720)
 
         self.reader_thread = None
 
@@ -328,10 +475,10 @@ class WebcamThread(QThread):
             t_start_frame = time.perf_counter()
 
             if not self.reader_thread or not self.reader_thread.isRunning():
-                 if self.running:
-                     print("Camera reader thread stopped unexpectedly.")
-                     self.camera_error_signal.emit("Camera disconnected or stopped working.")
-                 break
+                if self.running:
+                    print("Camera reader thread stopped unexpectedly.")
+                    self.camera_error_signal.emit("Camera disconnected or stopped working.")
+                break
 
             frame = self.reader_thread.get_latest_frame()
             if frame is None:
@@ -410,14 +557,33 @@ class WebcamThread(QThread):
         self.finished_signal.emit()
 
     def stop(self):
+        """Stop the webcam processing thread."""
         print("Stopping webcam processing thread...")
         self.running = False
 
-    def get_current_frames(self):
+    def get_current_frames(self) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+        """
+        Get the current original and processed frames.
+        
+        Returns:
+            Tuple: (original_frame, processed_frame) or (None, None) if unavailable.
+        """
         return self.current_original_frame, self.last_processed_frame
 
-# --- FileProcessThread ---
+# ============================================================================
+# FILE PROCESSING THREAD
+# ============================================================================
 class FileProcessThread(QThread):
+    """
+    Background thread for processing image files.
+    
+    Handles image loading, upscaling, and display in a non-blocking manner.
+    
+    Signals:
+        finished_signal: Emitted with original image, upscaled image, and processing time.
+        error_signal: Emitted when an error occurs during processing.
+    """
+    
     finished_signal = pyqtSignal(np.ndarray, np.ndarray, float)
     error_signal = pyqtSignal(str)
 
@@ -491,14 +657,24 @@ class FileProcessThread(QThread):
             self.running = False
 
     def stop(self):
+        """Request file processing cancellation."""
         print("Requesting file processing cancellation...")
         self.running = False
 
-# --- Main Application Window ---
+# ============================================================================
+# MAIN APPLICATION WINDOW
+# ============================================================================
 class MainWindow(QMainWindow):
+    """
+    Main application window for ESPCN Upscaler.
+    
+    Provides UI for webcam upscaling, batch file processing, and configuration.
+    Manages inference engine initialization and settings persistence.
+    """
+    
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("ESPCN Upscaler V9 (PyTorch/ONNX)") # V9: Updated title
+        self.setWindowTitle("ESPCN Upscaler")
         self.setGeometry(100, 100, 1000, 700)
 
         # --- State Variables ---
@@ -541,14 +717,24 @@ class MainWindow(QMainWindow):
         self.init_settings_tab()
 
         self.load_settings()
-        self.reinitialize_session() 
+        self.reinitialize_session()
 
         sys.stdout = self
         sys.stderr = self
-        print(f"--- {APP_NAME} V9 Initialized ---")
+        print(f"--- {APP_NAME} Initialized ---")
         print(f"Available ONNX Providers: {self.available_providers}")
 
-    def get_miku_stylesheet(self):
+    # ========================================================================
+    # STYLESHEET
+    # ========================================================================
+    
+    def get_miku_stylesheet(self) -> str:
+        """
+        Generate application stylesheet with Miku-inspired color scheme.
+        
+        Returns:
+            str: QSS stylesheet string.
+        """
         return f"""
             QMainWindow {{ background-color: {DARK_BG}; }}
             QTabWidget::pane {{ border-top: 2px solid {BORDER_COLOR}; background-color: {DARK_BG}; }}
@@ -582,8 +768,11 @@ class MainWindow(QMainWindow):
             QFrame#SeparatorLine {{ background-color: {BORDER_COLOR}; height: 1px; margin-top: 10px; margin-bottom: 10px; }}
         """
 
-    # --- Tab Initializers ---
+    # ========================================================================
+    # UI TAB INITIALIZATION
+    # ========================================================================
     def init_webcam_tab(self):
+        """Initialize the Webcam Upscaler tab."""
         self.webcam_tab = QWidget()
         layout = QHBoxLayout(self.webcam_tab)
         controls_layout = QVBoxLayout()
@@ -675,6 +864,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.webcam_tab, "Webcam Upscaler")
 
     def init_file_tab(self):
+        """Initialize the File Upscaler tab."""
         self.file_tab = QWidget()
         layout = QVBoxLayout(self.file_tab)
         top_controls_layout = QHBoxLayout()
@@ -726,8 +916,11 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.file_status_label)
         self.tabs.addTab(self.file_tab, "File Upscaler")
 
-    # --- init_settings_tab ---
+    # ========================================================================
+    # SETTINGS TAB INITIALIZATION
+    # ========================================================================
     def init_settings_tab(self):
+        """Initialize the Settings & Debug tab."""
         self.settings_tab = QWidget()
         layout = QVBoxLayout(self.settings_tab)
         layout.setAlignment(Qt.AlignmentFlag.AlignTop)
@@ -817,9 +1010,22 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.debug_log, 1)
         self.tabs.addTab(self.settings_tab, "Settings & Debug")
     
-    # --- Helper method ---
-    def _parse_scale_from_path(self, path_str):
-        """Tries to guess scale factor from filename (e.g., espcn_x2.pth)."""
+    # ========================================================================
+    # HELPER METHODS
+    # ========================================================================
+    def _parse_scale_from_path(self, path_str: str) -> int:
+        """
+        Parse upscale factor from model filename.
+        
+        Attempts to extract scale factor from filenames like 'espcn_x2.pth'
+        by looking for patterns like 'x2', 'x4', etc.
+        
+        Args:
+            path_str: Path or filename string to parse.
+        
+        Returns:
+            int: Detected scale factor, or 2 as default fallback.
+        """
         name = Path(path_str).stem.lower() # e.g., "best_espcn_x2_fp16"
         parts = name.split('_')
         for part in parts:
@@ -829,18 +1035,22 @@ class MainWindow(QMainWindow):
                 except ValueError:
                     continue
         print("Warning: Could not parse scale factor from filename. Defaulting to 2.")
-        return 2 # Default fallback
+        return 2
 
-    # --- Slot for radio buttons ---
+    # ========================================================================
+    # SETTINGS HANDLERS
+    # ========================================================================
     def toggle_provider_combo(self):
-        """Enables/disables the ONNX Provider dropdown based on engine."""
+        """Enable/disable ONNX Provider dropdown based on selected engine."""
         use_onnx = self.onnx_radio.isChecked()
         self.provider_combo.setEnabled(use_onnx)
         print(f"Provider combo enabled: {use_onnx}")
 
-    # --- Settings Handlers ---
-    # --- browse_model_path ---
+    # ========================================================================
+    # SETTINGS MANAGEMENT
+    # ========================================================================
     def browse_model_path(self):
+        """Open file dialog to select a model file."""
         fname, _ = QFileDialog.getOpenFileName(self, 'Open Model File', '.', "Model Files (*.onnx *.pth)")
         if fname:
             self.model_path_edit.setText(fname)
@@ -856,10 +1066,16 @@ class MainWindow(QMainWindow):
             self.toggle_provider_combo() # Update provider box state
             self.reinitialize_session() # Re-init after selection
 
-    # --- reinitialize_session ---
+    # ========================================================================
+    # ENGINE INITIALIZATION
+    # ========================================================================
     def reinitialize_session(self):
-        """Stops threads, reads settings, reloads the inference engine,
-           parses metadata, updates UI, saves settings, and auto-restarts webcam."""
+        """
+        Reinitialize the inference engine with current settings.
+        
+        Stops any running threads, reads UI settings, loads the model, parses metadata,
+        updates UI with detected model properties, and optionally restarts the webcam.
+        """
         print("Attempting to reinitialize inference engine...")
         was_running = self.webcam_thread and self.webcam_thread.isRunning()
         self.stop_webcam()
@@ -1010,6 +1226,7 @@ class MainWindow(QMainWindow):
 
     # --- save_settings ---
     def save_settings(self):
+        """Save current application settings to persistent storage."""
         print("Saving settings...")
         try:
             self.settings.setValue("engine_type", "pytorch" if self.pytorch_radio.isChecked() else "onnx") # NEW
@@ -1029,8 +1246,10 @@ class MainWindow(QMainWindow):
             print(f"Error saving settings: {e}")
             self.log_message(f"Warning: Could not save settings - {e}")
 
-    # --- load_settings ---
-    def load_settings(self):
+    # ========================================================================
+    # FILE TAB SLOTS
+    # ========================================================================
+        """Load application settings from persistent storage."""
         print("Loading settings...")
         try:
             # Load engine type first
@@ -1066,15 +1285,18 @@ class MainWindow(QMainWindow):
             
             saved_res_index = self.settings.value("resolution_index", 0, type=int)
             if 0 <= saved_res_index < self.resolution_combo.count():
-                 self.resolution_combo.setCurrentIndex(saved_res_index)
+                self.resolution_combo.setCurrentIndex(saved_res_index)
 
             print("Settings loaded.")
         except Exception as e:
             print(f"Error loading settings: {e}")
             self.log_message(f"Warning: Could not load settings - {e}")
 
-    # --- Webcam Tab Slots ---
+    # ========================================================================
+    # WEBCAM TAB SLOTS
+    # ========================================================================
     def populate_cameras(self):
+        """Scan for available cameras and populate the camera dropdown."""
         available_cameras = []
         for i in range(5):
             cap = cv2.VideoCapture(i)
@@ -1088,8 +1310,11 @@ class MainWindow(QMainWindow):
             self.cam_combo.setEnabled(False)
             self.start_button.setEnabled(False)
 
-    # --- start_webcam ---
+    # ========================================================================
+    # WEBCAM CONTROL
+    # ========================================================================
     def start_webcam(self):
+        """Start the webcam processing thread."""
         if not self.inference_engine:
             self.log_message("Error: Inference Engine not initialized.")
             return
@@ -1126,12 +1351,14 @@ class MainWindow(QMainWindow):
         self.snapshot_button.setEnabled(True)
 
     def stop_webcam(self):
+        """Stop the webcam processing thread."""
         if self.webcam_thread and self.webcam_thread.isRunning():
             print("Stopping webcam thread...")
             self.webcam_thread.stop()
         self.reset_webcam_ui_state()
 
     def webcam_finished_cleanup(self):
+        """Clean up after webcam thread finishes."""
         print("Webcam processing thread reported finished.")
         self.webcam_thread = None
         self.webcam_input_pixmap = None
@@ -1139,22 +1366,25 @@ class MainWindow(QMainWindow):
         self.reset_webcam_ui_state()
 
     def reset_webcam_ui_state(self):
+        """Reset webcam UI elements to their default state."""
         # --- reset_webcam_ui_state ---
         self.start_button.setEnabled(self.inference_engine is not None) 
         self.stop_button.setEnabled(False)
         self.snapshot_button.setEnabled(False)
         if self.cam_combo.count() > 0 and "No cameras found" not in self.cam_combo.itemText(0):
-             self.cam_combo.setEnabled(True)
+            self.cam_combo.setEnabled(True)
         self.resolution_combo.setEnabled(self.model_input_size is None and self.inference_engine is not None)
         self.frameskip_combo.setEnabled(True)
 
-    def handle_camera_error(self, error_message):
+    def handle_camera_error(self, error_message: str):
+        """Handle camera errors and display error message to user."""
         if self.webcam_thread:
-             self.log_message(f"Camera Error: {error_message}")
-             QMessageBox.warning(self, "Camera Error", error_message)
-             self.stop_webcam()
+            self.log_message(f"Camera Error: {error_message}")
+            QMessageBox.warning(self, "Camera Error", error_message)
+            self.stop_webcam()
 
     def take_webcam_snapshot(self):
+        """Take a snapshot from current webcam frames."""
         if self.webcam_thread and self.webcam_thread.isRunning():
             original_bgr, processed_bgr = self.webcam_thread.get_current_frames()
             if original_bgr is not None and processed_bgr is not None:
@@ -1166,22 +1396,26 @@ class MainWindow(QMainWindow):
                     cv2.imwrite(str(original_filename), original_bgr)
                     cv2.imwrite(str(processed_filename), processed_bgr)
                     self.log_message(f"Snapshot saved: {original_filename.name}, {processed_filename.name}")
-                except Exception as e: self.log_message(f"Error saving snapshot: {e}")
-            else: self.log_message("Could not get frames for snapshot.")
-        else: self.log_message("Cannot take snapshot: Webcam is not running.")
+                except Exception as e: 
+                    self.log_message(f"Error saving snapshot: {e}")
+            else: 
+                self.log_message("Could not get frames for snapshot.")
+        else: 
+            self.log_message("Cannot take snapshot: Webcam is not running.")
 
-    def update_webcam_preview(self, original_frame_bgr, processed_frame_bgr, stats):
+    def update_webcam_preview(self, original_frame_bgr: np.ndarray, processed_frame_bgr: np.ndarray, stats: Dict):
+        """Update the webcam preview display and statistics."""
         try:
             if self.webcam_thread and self.webcam_thread.preview_enabled:
-                 h_orig, w_orig, _ = original_frame_bgr.shape
-                 q_image_orig = QImage(np.ascontiguousarray(original_frame_bgr.data), w_orig, h_orig, 3 * w_orig, QImage.Format.Format_BGR888)
-                 self.webcam_input_pixmap = QPixmap.fromImage(q_image_orig)
-                 self.display_image(self.input_video_label, self.webcam_input_pixmap)
+                h_orig, w_orig, _ = original_frame_bgr.shape
+                q_image_orig = QImage(np.ascontiguousarray(original_frame_bgr.data), w_orig, h_orig, 3 * w_orig, QImage.Format.Format_BGR888)
+                self.webcam_input_pixmap = QPixmap.fromImage(q_image_orig)
+                self.display_image(self.input_video_label, self.webcam_input_pixmap)
 
-                 h_proc, w_proc, _ = processed_frame_bgr.shape
-                 q_image_proc = QImage(np.ascontiguousarray(processed_frame_bgr.data), w_proc, h_proc, 3 * w_proc, QImage.Format.Format_BGR888)
-                 self.webcam_output_pixmap = QPixmap.fromImage(q_image_proc)
-                 self.display_image(self.output_video_label, self.webcam_output_pixmap)
+                h_proc, w_proc, _ = processed_frame_bgr.shape
+                q_image_proc = QImage(np.ascontiguousarray(processed_frame_bgr.data), w_proc, h_proc, 3 * w_proc, QImage.Format.Format_BGR888)
+                self.webcam_output_pixmap = QPixmap.fromImage(q_image_proc)
+                self.display_image(self.output_video_label, self.webcam_output_pixmap)
 
             stats_text = (f"Status: {stats.get('status', 'N/A')} | "
                           f"Infer: {stats['inference_ms']:.1f} ms | "
@@ -1194,17 +1428,22 @@ class MainWindow(QMainWindow):
             print(f"Error updating webcam preview: {e}")
 
     def toggle_preview(self, state):
+        """Toggle preview display on/off."""
         is_checked = (state == Qt.CheckState.Checked.value)
         if self.webcam_thread and self.webcam_thread.isRunning():
             self.webcam_thread.preview_enabled = is_checked
             print(f"Preview toggled: {is_checked}")
         if not is_checked:
-            self.input_video_label.clear(); self.output_video_label.clear()
-            self.input_video_label.setText("Preview Disabled"); self.output_video_label.setText("Preview Disabled")
-            self.webcam_input_pixmap = None; self.webcam_output_pixmap = None
+            self.input_video_label.clear()
+            self.output_video_label.clear()
+            self.input_video_label.setText("Preview Disabled")
+            self.output_video_label.setText("Preview Disabled")
+            self.webcam_input_pixmap = None
+            self.webcam_output_pixmap = None
         self.settings.setValue("preview_checked", is_checked)
 
     def toggle_virtual_cam(self, state):
+        """Toggle virtual camera output on/off."""
         is_enabled = (state == Qt.CheckState.Checked.value)
         print(f"Virtual Cam output set to: {is_enabled} (will apply on next 'Start Webcam')")
         if self.webcam_thread and self.webcam_thread.isRunning():
@@ -1214,6 +1453,7 @@ class MainWindow(QMainWindow):
     # --- File Tab Slots ---
     # --- select_image_file ---
     def select_image_file(self):
+        """Open file dialog to select an image for upscaling."""
         if not self.inference_engine:
             self.log_message("Error: Inference Engine not initialized.")
             return
@@ -1237,6 +1477,7 @@ class MainWindow(QMainWindow):
             self.file_thread.start()
 
     def cancel_file_processing(self):
+        """Cancel ongoing file processing."""
         if self.file_thread and self.file_thread.isRunning():
             self.file_thread.stop()
             self.file_status_label.setText("Status: Cancelling...")
@@ -1244,65 +1485,76 @@ class MainWindow(QMainWindow):
         else:
             print("No file processing task to cancel.")
 
-    def file_processing_finished(self, original_rgb, upscaled_rgb, processing_time):
+    def file_processing_finished(self, original_rgb: np.ndarray, upscaled_rgb: np.ndarray, processing_time: float):
+        """Handle completion of file processing."""
         self.file_status_label.setText(f"Status: Finished in {processing_time:.2f} seconds.")
         try:
-             self.upscaled_image_data = cv2.cvtColor(upscaled_rgb, cv2.COLOR_RGB2BGR)
-             h_orig, w_orig, ch = original_rgb.shape
-             q_image_orig = QImage(np.ascontiguousarray(original_rgb.data), w_orig, h_orig, ch * w_orig, QImage.Format.Format_RGB888)
-             self.original_pixmap = QPixmap.fromImage(q_image_orig)
-             self.display_image(self.original_image_label, self.original_pixmap)
+            self.upscaled_image_data = cv2.cvtColor(upscaled_rgb, cv2.COLOR_RGB2BGR)
+            h_orig, w_orig, ch = original_rgb.shape
+            q_image_orig = QImage(np.ascontiguousarray(original_rgb.data), w_orig, h_orig, ch * w_orig, QImage.Format.Format_RGB888)
+            self.original_pixmap = QPixmap.fromImage(q_image_orig)
+            self.display_image(self.original_image_label, self.original_pixmap)
 
-             h_up, w_up, ch = upscaled_rgb.shape
-             q_image_up = QImage(np.ascontiguousarray(upscaled_rgb.data), w_up, h_up, ch * w_up, QImage.Format.Format_RGB888)
-             self.upscaled_pixmap = QPixmap.fromImage(q_image_up)
-             self.display_image(self.upscaled_image_label, self.upscaled_pixmap)
+            h_up, w_up, ch = upscaled_rgb.shape
+            q_image_up = QImage(np.ascontiguousarray(upscaled_rgb.data), w_up, h_up, ch * w_up, QImage.Format.Format_RGB888)
+            self.upscaled_pixmap = QPixmap.fromImage(q_image_up)
+            self.display_image(self.upscaled_image_label, self.upscaled_pixmap)
 
-             self.save_button.setEnabled(True)
+            self.save_button.setEnabled(True)
         except Exception as e:
             self.file_processing_error(f"Error displaying results: {e}")
 
-    def file_processing_error(self, error_message):
+    def file_processing_error(self, error_message: str):
+        """Handle file processing errors."""
         self.log_message(f"File Error: {error_message}")
         QMessageBox.warning(self, "File Processing Error", error_message)
         self.file_status_label.setText(f"Status: Error")
-        self.original_image_label.setText("Error"); self.upscaled_image_label.setText("Error")
+        self.original_image_label.setText("Error")
+        self.upscaled_image_label.setText("Error")
         self.save_button.setEnabled(False)
 
-    # --- file_processing_ui_cleanup ---
     def file_processing_ui_cleanup(self):
+        """Clean up UI after file processing completes."""
         self.file_thread = None
-        self.select_button.setEnabled(self.inference_engine is not None) 
+        self.select_button.setEnabled(self.inference_engine is not None)
         self.cancel_button.setEnabled(False)
         current_status = self.file_status_label.text()
         if "Processing" in current_status or "Cancelling" in current_status:
             self.file_status_label.setText("Status: Cancelled or Ended")
-            if not self.original_pixmap: self.original_image_label.setText("Cancelled")
-            if not self.upscaled_pixmap: self.upscaled_image_label.setText("Cancelled")
+            if not self.original_pixmap:
+                self.original_image_label.setText("Cancelled")
+            if not self.upscaled_pixmap:
+                self.upscaled_image_label.setText("Cancelled")
 
-    def display_image(self, label, pixmap):
+    def display_image(self, label: QLabel, pixmap: Optional[QPixmap]):
+        """Display a scaled pixmap in a label."""
         if pixmap and not label.size().isEmpty() and label.size().isValid():
-             try:
+            try:
                 scaled_pixmap = pixmap.scaled(label.size(),
                                               Qt.AspectRatioMode.KeepAspectRatio,
                                               Qt.TransformationMode.SmoothTransformation)
                 label.setPixmap(scaled_pixmap)
-             except Exception as e:
-                 print(f"Error scaling/displaying image: {e}")
-                 label.setText("Display Error")
+            except Exception as e:
+                print(f"Error scaling/displaying image: {e}")
+                label.setText("Display Error")
 
     def resizeEvent(self, event):
+        """Handle window resize events."""
         super().resizeEvent(event)
         self.resize_timer.start(50)
 
     def handle_resize(self):
+        """Handle deferred resize updates for image displays."""
         self.display_image(self.original_image_label, self.original_pixmap)
         self.display_image(self.upscaled_image_label, self.upscaled_pixmap)
         self.display_image(self.input_video_label, self.webcam_input_pixmap)
         self.display_image(self.output_video_label, self.webcam_output_pixmap)
 
     def save_upscaled_image(self):
-        if self.upscaled_image_data is None: self.log_message("No upscaled image data."); return
+        """Save the upscaled image to disk."""
+        if self.upscaled_image_data is None:
+            self.log_message("No upscaled image data.")
+            return
         original_name = Path(self.selected_file_label.text()).stem
         suggested_name = f"{original_name}_x{self.model_scale_factor}_upscaled.png"
         fpath, _ = QFileDialog.getSaveFileName(self, 'Save Upscaled Image', suggested_name, "PNG (*.png);;JPEG (*.jpg *.jpeg);;Bitmap (*.bmp)")
@@ -1316,13 +1568,19 @@ class MainWindow(QMainWindow):
                 self.file_status_label.setText("Status: Save Error")
                 QMessageBox.critical(self, "Save Error", f"Could not save image:\n{e}")
 
-    # --- Logging ---
-    def log_message(self, message):
+    # ========================================================================
+    # LOGGING AND APPLICATION LIFECYCLE
+    # ========================================================================
+    def log_message(self, message: str):
+        """Log a message to the debug log with timestamp."""
         timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
         self.debug_log.append(f"[{timestamp}] {message}")
 
-    # --- QMainWindow Close Event ---
+    # ========================================================================
+    # APPLICATION LIFECYCLE
+    # ========================================================================
     def closeEvent(self, event):
+        """Handle application close event with proper cleanup."""
         print("Closing application...")
         webcam_stopped = True
         file_stopped = True
@@ -1351,15 +1609,22 @@ class MainWindow(QMainWindow):
         self.save_settings()
         event.accept()
 
-    # --- Methods for redirecting print() ---
-    def write(self, text):
+    # ========================================================================
+    # OUTPUT STREAM REDIRECTION (for print() capture)
+    # ========================================================================
+
+    def write(self, text: str):
+        """Redirect stdout/stderr to debug log."""
         if text.strip():
-             self.log_message(text.strip())
+            self.log_message(text.strip())
 
     def flush(self):
+        """Placeholder for stream flushing."""
         pass
 
-# --- Main Execution ---
+# ============================================================================
+# MAIN EXECUTION
+# ============================================================================
 if __name__ == '__main__':
     app = QApplication(sys.argv)
     window = MainWindow()

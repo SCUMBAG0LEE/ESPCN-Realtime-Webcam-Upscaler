@@ -1,35 +1,72 @@
+"""
+Batch Image Processing Checker
+
+Validates processed image batches for consistency and completeness.
+Checks resolution alignment, file sizes, and duplicate detection.
+
+Dependencies:
+    - pillow (PIL)
+"""
+
 import os
 from pathlib import Path
+from typing import Dict, Optional, List, Tuple
 
-from PIL import Image  # pip install pillow
+from PIL import Image
+
+# ============================================================================
+# CONFIGURATION
+# ============================================================================
 
 RESULTS_ROOT = r"C:\256GB\ESPCN\results"
 ADDITION_ROOT = r"C:\256GB\ESPCN\addition"
+TOLERANCE = 1
 
-TOLERANCE = 1  # allowed +/- pixels for width/height vs original
+# ============================================================================
+# HELPER FUNCTIONS
+# ============================================================================
 
-
-def get_image_size(path: Path):
+def get_image_size(path: Path) -> Tuple[int, int]:
+    """Get image dimensions.
+    
+    Args:
+        path: Path to image file.
+    
+    Returns:
+        Tuple: (width, height)
+    """
     with Image.open(path) as img:
-        return img.size  # (w, h)
+        return img.size
 
 
-def get_file_size(path: Path):
+def get_file_size(path: Path) -> int:
+    """Get file size in bytes.
+    
+    Args:
+        path: Path to file.
+    
+    Returns:
+        int: File size in bytes.
+    """
     return path.stat().st_size
 
 
-def check_processed_folder(folder: Path):
-    """
-    Check one leaf folder under results:
-    - All PNGs must have identical resolution to pass.
-    - Return:
-        dict with:
-            'status_3' : 'PASS' / 'FAIL' for the 3-image resolution check
-            'sizes'    : { (w,h): [filenames...] }
-            'files'    : { 'orig': Path or None,
-                           'bicubic': Path or None,
-                           'espcn': Path or None }
-            'dup_size' : 'NONE' / 'BICUBIC_EQ_ESPCN' / etc.
+def check_processed_folder(folder: Path) -> Optional[Dict]:
+    """Validate a processed image folder.
+    
+    Checks one leaf folder under results for resolution consistency.
+    All PNGs must have identical resolution to pass.
+    
+    Args:
+        folder: Path to folder containing PNG images.
+    
+    Returns:
+        dict with keys:
+            - 'status_3': 'PASS'/'FAIL' for 3-image resolution check
+            - 'sizes': {(w,h): [filenames...]}
+            - 'files': {'orig': Path, 'bicubic': Path, 'espcn': Path}
+            - 'dup_size': 'NONE'/'BICUBIC_EQ_ESPCN' etc.
+        None if folder has no PNG files.
     """
     pngs = sorted(folder.glob("*.png"))  # alphabetical
     if not pngs:
@@ -72,24 +109,37 @@ def check_processed_folder(folder: Path):
     }
 
 
-def list_leaf_folders(root: Path):
+def list_leaf_folders(root: Path) -> List[Path]:
+    """Find all leaf folders (no subfolders) containing PNG files.
+    
+    Args:
+        root: Root directory to search.
+    
+    Returns:
+        List of Path objects, sorted alphabetically by folder name.
+    """
     leafs = []
     for dirpath, dirnames, filenames in os.walk(root):
         if dirnames:
-            # has subfolders → not a leaf
             continue
         pngs_here = [f for f in filenames if f.lower().endswith(".png")]
         if not pngs_here:
             continue
         leafs.append(Path(dirpath))
-    # sort alphabetically by folder name so 01, 02, ... align with originals
     leafs.sort(key=lambda p: p.name)
     return leafs
 
 
-def list_originals_for_class(addition_root: Path, class_name: str):
+def list_originals_for_class(addition_root: Path, class_name: str) -> list:
     """
-    Return sorted list of image Paths for the given class under addition.
+    Return sorted list of image Paths for the given class under addition directory.
+    
+    Args:
+        addition_root: Root path to the addition directory.
+        class_name: Name of the class subdirectory.
+    
+    Returns:
+        List of Path objects for image files, sorted by filename (case-insensitive).
     """
     folder = addition_root / class_name
     if not folder.is_dir():
@@ -100,14 +150,33 @@ def list_originals_for_class(addition_root: Path, class_name: str):
     return files
 
 
-def within_tolerance(size_proc, size_orig, tol=TOLERANCE):
+def within_tolerance(size_proc: Tuple[int, int], size_orig: Tuple[int, int], tol: int = TOLERANCE) -> bool:
+    """
+    Check if processed image size is within tolerance of original size.
+    
+    Args:
+        size_proc: Processed image size as (width, height).
+        size_orig: Original image size as (width, height).
+        tol: Tolerance in pixels (default from TOLERANCE constant).
+    
+    Returns:
+        True if both width and height differences are within tolerance.
+    """
     w_p, h_p = size_proc
     w_o, h_o = size_orig
     return abs(w_p - w_o) <= tol and abs(h_p - h_o) <= tol
 
 
-def main():
-    results_root = Path(RESULTS_ROOT)
+def main() -> None:
+    """
+    Main entry point. Validates processed image batches against original images.
+    
+    Checks:
+    - Number of processed images matches originals
+    - Image resolutions are within tolerance
+    - File sizes are reasonable (no duplicates detected)
+    - 3-image consistency status for each folder
+    """
     addition_root = Path(ADDITION_ROOT)
 
     classes = ["Bricks", "Fabric", "Face", "Hairs", "Nature"]

@@ -1,6 +1,20 @@
+# Core dependencies
 torch
 numpy
-PyQt6
 opencv-python
+
+# GUI
+PyQt6
+
+# Inference
+onnxruntime-directml  # Windows DirectML (replace with onnxruntime-gpu for CUDA)
+
+# Virtual camera output
 pyvirtualcam
-onnxruntime-directml
+
+# Training dependencies (optional - install separately for training)
+# pytorch-msssim
+# pandas
+# matplotlib
+# tqdm
+# torchvision

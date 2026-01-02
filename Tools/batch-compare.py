@@ -1,15 +1,40 @@
+"""
+Batch Image Comparison Tool
+
+Compares bicubic and ESPCN upscaled images against ground truth.
+Calculates MSE, PSNR, and SSIM metrics, and generates comparison visualizations.
+
+Dependencies:
+    - matplotlib
+    - scikit-image
+"""
+
 from pathlib import Path
+from typing import Optional
+
 import matplotlib.pyplot as plt
 from skimage import io
 from skimage.metrics import peak_signal_noise_ratio as psnr
 from skimage.metrics import structural_similarity as ssim
 from skimage.metrics import mean_squared_error as mse
 
+# ============================================================================
+# IMAGE COMPARISON
+# ============================================================================
 
-def compare_images(img_gt_file, img_bicubic_file, img_espcn_file, out_file):
-    """
-    Loads three images, calculates MSE, PSNR, SSIM for Bicubic and ESPCN
+
+def compare_images(img_gt_file: str, img_bicubic_file: str, img_espcn_file: str, 
+                   out_file: str) -> None:
+    """Compare bicubic and ESPCN upscaling quality against ground truth.
+    
+    Loads three images, calculates MSE, PSNR, SSIM metrics for Bicubic and ESPCN
     against the ground truth, and saves a side-by-side comparison figure.
+    
+    Args:
+        img_gt_file: Path to ground truth image.
+        img_bicubic_file: Path to bicubic upscaled image.
+        img_espcn_file: Path to ESPCN upscaled image.
+        out_file: Path where comparison figure will be saved.
     """
     # --- 1. Load Images ---
     try:
@@ -25,7 +50,7 @@ def compare_images(img_gt_file, img_bicubic_file, img_espcn_file, out_file):
 
     # --- 2. Pre-processing and Validation ---
 
-    # Handle potential 4-channel PNGs (RGBA) by dropping alpha channel
+    # Handle 4-channel PNGs (RGBA) by dropping alpha channel
     if img_gt.ndim == 3 and img_gt.shape[-1] == 4:
         img_gt = img_gt[..., :3]
     if img_bicubic.ndim == 3 and img_bicubic.shape[-1] == 4:
@@ -112,10 +137,14 @@ def compare_images(img_gt_file, img_bicubic_file, img_espcn_file, out_file):
     plt.close(fig)
 
 
-def batch_compare(output_root="./output"):
-    """
+def batch_compare(output_root: str = "./output") -> None:
+    """Process batch comparison for all images.
+    
     Walks ./output/<Category>/<NN>/, finds the 3 images, and writes
     <Category><NN>_comparison.png in the same folder.
+    
+    Args:
+        output_root: Root directory containing categorized image folders.
     """
     output_root = Path(output_root)
 

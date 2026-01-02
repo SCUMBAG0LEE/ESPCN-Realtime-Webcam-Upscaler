@@ -1,12 +1,36 @@
+"""
+Image Quality Comparison Tool
+
+Compares bicubic and ESPCN upscaled images against ground truth.
+Displays side-by-side comparison with quality metrics (MSE, PSNR, SSIM).
+
+Dependencies:
+    - matplotlib
+    - scikit-image
+"""
+
+from typing import Optional
+
 import matplotlib.pyplot as plt
 from skimage import io
 from skimage.metrics import peak_signal_noise_ratio as psnr
 from skimage.metrics import structural_similarity as ssim
 from skimage.metrics import mean_squared_error as mse
 
-def compare_images(img_gt_file, img_bicubic_file, img_espcn_file):
-    """
-    Loads three images, calculates MSE, PSNR, & SSIM, and displays them.
+# ============================================================================
+# IMAGE COMPARISON
+# ============================================================================
+
+def compare_images(img_gt_file: str, img_bicubic_file: str, img_espcn_file: str) -> None:
+    """Compare bicubic and ESPCN upscaling quality against ground truth.
+    
+    Loads three images, calculates MSE, PSNR, and SSIM metrics,
+    and displays them in a side-by-side visualization.
+    
+    Args:
+        img_gt_file: Path to ground truth image.
+        img_bicubic_file: Path to bicubic upscaled image.
+        img_espcn_file: Path to ESPCN upscaled image.
     """
     
     # --- 1. Load Images ---
@@ -23,13 +47,13 @@ def compare_images(img_gt_file, img_bicubic_file, img_espcn_file):
         return
 
     # --- 2. Pre-processing and Validation ---
-    
-    # Handle potential 4-channel PNGs (RGBA) by dropping alpha channel
-    if img_gt.shape[-1] == 4:
+
+    # Handle 4-channel PNGs (RGBA) by dropping alpha channel
+    if img_gt.ndim == 3 and img_gt.shape[-1] == 4:
         img_gt = img_gt[..., :3]
-    if img_bicubic.shape[-1] == 4:
+    if img_bicubic.ndim == 3 and img_bicubic.shape[-1] == 4:
         img_bicubic = img_bicubic[..., :3]
-    if img_espcn.shape[-1] == 4:
+    if img_espcn.ndim == 3 and img_espcn.shape[-1] == 4:
         img_espcn = img_espcn[..., :3]
 
     # Check if images have the same dimensions
@@ -42,11 +66,10 @@ def compare_images(img_gt_file, img_bicubic_file, img_espcn_file):
 
     # Determine if images are grayscale or color for SSIM
     is_multichannel = img_gt.ndim == 3
-    # For ssim, use 'channel_axis=-1' for color, 'None' for grayscale
     channel_axis = -1 if is_multichannel else None
 
     # --- 3. Calculate Metrics ---
-    
+
     # Get the data range (e.g., 255 for 8-bit images)
     data_range = img_gt.max() - img_gt.min()
 
@@ -63,12 +86,12 @@ def compare_images(img_gt_file, img_bicubic_file, img_espcn_file):
     # --- 4. Print Results to Console ---
     print("--- Image Quality Comparison ---")
     print(f"\nComparing to Ground Truth ({img_gt_file}):\n")
-    
+
     print(f"Bicubic ({img_bicubic_file}):")
     print(f"  MSE:  {mse_bicubic:.2f}")
     print(f"  PSNR: {psnr_bicubic:.2f} dB")
     print(f"  SSIM: {ssim_bicubic:.4f}")
-    
+
     print(f"\nESPCN ({img_espcn_file}):")
     print(f"  MSE:  {mse_espcn:.2f}")
     print(f"  PSNR: {psnr_espcn:.2f} dB")
@@ -78,8 +101,8 @@ def compare_images(img_gt_file, img_bicubic_file, img_espcn_file):
     print("      Higher PSNR and SSIM (closer to 1.0) are better.")
 
     # --- 5. Display Images Side-by-Side ---
-    fig, axes = plt.subplots(1, 3, figsize=(20, 7)) # Increased size slightly
-    
+    fig, axes = plt.subplots(1, 3, figsize=(20, 7))
+
     # Ground Truth
     axes[0].imshow(img_gt)
     axes[0].set_title(f"Ground Truth\n({img_gt_file})")
@@ -98,6 +121,17 @@ def compare_images(img_gt_file, img_bicubic_file, img_espcn_file):
 
     # ESPCN
     axes[2].imshow(img_espcn)
+    title_espcn = (
+        f"ESPCN ({img_espcn_file})\n"
+        f"MSE: {mse_espcn:.2f}\n"
+        f"PSNR: {psnr_espcn:.2f} dB\n"
+        f"SSIM: {ssim_espcn:.4f}"
+    )
+    axes[2].set_title(title_espcn)
+    axes[2].axis('off')
+
+    plt.tight_layout()
+    plt.show()
     title_espcn = (
         f"ESPCN ({img_espcn_file})\n"
         f"MSE: {mse_espcn:.2f}\n"

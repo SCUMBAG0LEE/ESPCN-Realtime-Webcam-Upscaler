@@ -1,17 +1,36 @@
+"""
+Batch Image Processing Script
+
+Processes images through ESPCN upscaling model with comparison to bicubic interpolation.
+Supports both PyTorch and ONNX Runtime inference engines.
+
+Dependencies:
+    - opencv-python
+    - torch
+    - numpy
+    - onnxruntime
+    - Pillow (optional)
+
+Configuration:
+    Update paths and model settings in the main() function before running.
+"""
+
 import os
 import cv2
 import torch
-import tensorrt
 import numpy as np
 import torch.nn as nn
 from pathlib import Path
+from typing import Optional, Tuple
 import onnxruntime as ort
 
-# =========================
-# Model definitions (from Client.py, simplified)
-# =========================
+# ============================================================================
+# MODEL DEFINITIONS
+# ============================================================================
 
 class ESPCN(nn.Module):
+    """Efficient Sub-Pixel Convolutional Neural Network for 2x upscaling."""
+    
     def __init__(self, upscale_factor: int):
         super(ESPCN, self).__init__()
         self.conv1 = nn.Conv2d(3, 64, kernel_size=5, padding=2)
@@ -20,7 +39,8 @@ class ESPCN(nn.Module):
         self.pixel_shuffle = nn.PixelShuffle(upscale_factor)
         self.relu = nn.ReLU()
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Forward pass through ESPCN network."""
         x = self.relu(self.conv1(x))
         x = self.relu(self.conv2(x))
         x = self.pixel_shuffle(self.conv3(x))
@@ -28,16 +48,36 @@ class ESPCN(nn.Module):
 
 
 def preprocess_image(frame: np.ndarray, is_fp16: bool = False) -> np.ndarray:
-    """BGR HWC -> NCHW float32/16, normalized to [0,1]."""
+    """Preprocess image for inference.
+    
+    Converts BGR HWC to NCHW float32/16, normalized to [0,1].
+    
+    Args:
+        frame: Input image as NumPy array (BGR HWC).
+        is_fp16: Whether to use FP16 precision.
+    
+    Returns:
+        np.ndarray: Preprocessed tensor in NCHW format.
+    """
     dtype = np.float16 if is_fp16 else np.float32
     img = frame.astype(dtype) / 255.0
-    img = img.transpose(2, 0, 1)  # HWC -> CHW
-    img = np.expand_dims(img, axis=0)  # NCHW
+    img = img.transpose(2, 0, 1)
+    img = np.expand_dims(img, axis=0)
     return img
 
 
 def postprocess_output(output_tensor: np.ndarray, is_output_rgb: bool = True) -> np.ndarray:
-    """NCHW -> BGR HWC uint8."""
+    """Postprocess model output to displayable image.
+    
+    Converts NCHW format back to BGR HWC uint8.
+    
+    Args:
+        output_tensor: Model output tensor (NCHW).
+        is_output_rgb: Whether output is RGB (needs BGR conversion).
+    
+    Returns:
+        np.ndarray: Displayable image in BGR HWC format (uint8).
+    """
     if output_tensor is None or output_tensor.size == 0:
         return np.zeros((100, 100, 3), dtype=np.uint8)
 
