@@ -1,0 +1,6 @@
+torch
+numpy
+PyQt6
+opencv-python
+pyvirtualcam
+onnxruntime-directml
